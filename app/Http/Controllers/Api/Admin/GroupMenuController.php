@@ -10,8 +10,13 @@ use App\Services\Masterdata\GroupMenuService;
  * Access groups: which admin menus a role may reach.
  *
  * A user's roles_code names one of these, and the grants under it decide what
- * their sidebar shows. Menus are per website, so a group only ever grants its
- * own site's rows.
+ * their sidebar shows.
+ *
+ * The menu tree is one tree for the installation, shared by every website --
+ * the sidebar is the admin application, and that does not differ per site (see
+ * drop_website_id_from_menus). The group is what belongs to a website, so that
+ * is what every route here scopes on: a group from another site is not this
+ * caller's to read, edit or grant out of.
  */
 class GroupMenuController extends ApiController
 {
@@ -28,16 +33,25 @@ class GroupMenuController extends ApiController
     }
 
     /**
-     * The full menu tree of this website: what a group's grants are picked
-     * from. Pass ?group={id} to get that group's current selection alongside.
+     * The full menu tree: what a group's grants are picked from. Pass
+     * ?group={id} to get that group's current selection alongside.
+     *
+     * One tree for the installation, so this is not website scoped -- the
+     * groups granting out of it are (see drop_website_id_from_menus). The
+     * selection is, though: a group from another site is not this caller's to
+     * read.
      */
     public function menuTree()
     {
         $groupId = request()->query('group');
 
+        if ($groupId && !$this->service->getRow($groupId, admin_website_id())) {
+            return $this->notFound('Group');
+        }
+
         return response()->json([
             'data' => [
-                'tree'     => $this->service->getMenuTree(admin_website_id()),
+                'tree'     => $this->service->getMenuTree(),
                 'selected' => $groupId ? $this->service->getSelectedMenuIds($groupId) : [],
             ],
         ]);

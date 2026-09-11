@@ -8,7 +8,7 @@ vue-vite  ->  API Gateway (this directory)
                   |  JWT
                   +--> website-service      site identity, theming, layout, content
                   +--> shop-service         catalogue, carts, checkout, orders
-                  +--> thirdparty-service   Omile TMS, RajaOngkir
+                  +--> thirdparty-service   Omile TMS, RajaOngkir, Qrisly
 ```
 
 The three services are API-only: no Blade, no session, no `users` table. Each
@@ -19,10 +19,10 @@ one boots from `routes/api.php` alone and renders every failure as JSON
 
 | | tables | public API | admin API |
 |---|---|---|---|
-| **gateway** (`.`) | users, sessions, menus, access groups | `/api/auth/*`, `/api/files/{path}`, `/api/v1/*` —> website-service | `/api/admin/{users,access-groups,menus,files}` |
-| **website-service** | websites, web_styles, web_sections, styles, banners, contents, abouts, message | `/api/v1/portal`, `/api/v1/sites/{id}/*` | `/api/admin/{website,styles,sections,banners,contents,abouts,messages}` |
-| **shop-service** | services, categories, products, packages, carts, transactions, banks, other_charges, delivery_prices | `/api/v1/sites/{id}/{catalog,cart,checkout,receipt,...}`, `/api/v1/regions/*` | `/api/admin/{services,categories,products,packages,other-charges,banks,delivery-prices,transactions}` |
-| **thirdparty-service** | — (reference lookups only) | `/api/v1/logistics/*`, `/api/v1/shipping/*` | `/api/admin/shipping/mapping/sync` |
+| **gateway** (`.`) | users, sessions, menus, access groups | `/api/auth/*`, `/api/files/{path}`, `/api/v1/sites/{id}/receipt/{token}/payment-status`, `/api/v1/*` —> website-service | `/api/admin/{users,access-groups,menus,files}` |
+| **website-service** | websites, web_styles, web_sections, styles, banners, contents, content_views, content_comments, abouts, message | `/api/v1/portal`, `/api/v1/sites/{id}/*` | `/api/admin/{website,styles,sections,banners,contents,comments,abouts,messages}` |
+| **shop-service** | services, categories, products, product_views, packages, carts, transactions, banks, other_charges, delivery_prices | `/api/v1/sites/{id}/{catalog,cart,checkout,receipt,...}`, `/api/v1/regions/*` | `/api/admin/{services,categories,products,packages,other-charges,banks,delivery-prices,transactions}` |
+| **thirdparty-service** | qris, qris_payments, api_logs, plus reference lookups | `/api/v1/logistics/*`, `/api/v1/shipping/*`, `/api/v1/sites/{id}/qris`, `/api/v1/payment/qris{,/{history_id},/reference/{ref}}`, `/api/v1/payment/qris/{history_id\|reference/{ref}}/status` | `/api/admin/shipping/mapping/sync`, `/api/admin/qris/*` |
 
 Every app also keeps the shared reference data — `codes`, the `glb_*` regions,
 `rajaongkirmap`, `couriers` — so no lookup needs a cross-service call. That
@@ -152,6 +152,47 @@ against this service (see its docblock).
 - **Files** land in the gateway's `public/`. The services point
   `UPLOAD_PUBLIC_ROOT` at it and store only the relative path, so one host
   serves every image.
+- **The QRIS admin fee is quoted flat, then settled.** Checkout charges a round
+  200 because the real cost is not knowable yet: the provider takes 100 per
+  payment and then nudges the amount by 1–99 so payments of equal value can be
+  told apart. So the QRIS is raised for the order's total *less* 100, and once
+  the nudge is known the difference comes back as a negative charge line —
+  leaving the order's total equal to the figure being scanned, and the customer
+  always paying less than quoted rather than being surcharged for a "unique
+  code" they never asked for. shop-service `config/checkout.php` holds the
+  arithmetic.
+- **A QRIS is generated once, when the order is placed.** `ShopController::checkout`
+  raises it through `OrderQrisService::raiseForOrder` as part of placing a
+  `TRTQR` order, and nothing afterwards generates another: the receipt carries
+  the stored payment under `data.qris_payment` as a plain read, so refreshing
+  it never calls Qrisly. A generated payment costs the seller, which is why it
+  belongs to creating the order rather than to looking at it.
+- **The provider's payment window is fifteen minutes.** Since nothing
+  regenerates, a customer who does not scan within it has an expired code and
+  the order has to be paid another way. Whatever eventually issues a
+  replacement must take the amount from the total with the settlement line
+  undone (`OrderQrisService::unsettledTotal`), never from `grandtotal`, or each
+  regeneration discounts the same fee again and the seller covers the
+  difference.
+- **A payment is paid because something asked.** Qrisly sends no webhook, so
+  asking is the only way a payment stops being `unpaid`. A receipt page asks
+  through the gateway's `GET /api/v1/sites/{id}/receipt/{token}/payment-status`,
+  which is throttled because a call can cost an upstream request.
+- **The order decides whether to ask, and the order is what gets settled.** The
+  check runs only while the transaction is still awaiting money — not while the
+  payment row says `unpaid`, since the two can disagree and the order is
+  authoritative. When Qrisly confirms, both sides move: thirdparty-service
+  stamps `paid_at` on the payment, and shop-service is told to advance the
+  transaction to `STSPD` via `POST .../receipt/{token}/qris-paid`. That route
+  takes no body — the caller names the order and asserts nothing — so holding a
+  receipt token is not a way to declare your own order paid; Qrisly's verdict on
+  the far side of the gateway is. Both halves are idempotent, so a polling page
+  writes one history row, not one per tick, and `order.settled` is its signal to
+  stop.
+- **Upstream datetimes are converted, not stored as sent.** Qrisly writes
+  `expiry_time` in Jakarta wall clock with no offset while these applications
+  store UTC, so `QrislyService::timestamp()` normalises everything coming in.
+  Left raw, an expired payment reads as live for another seven hours.
 - **Prices are never taken from a request.** `CheckoutService` re-reads every
   line from the catalogue and re-resolves the delivery fare, so confirm and
   place cannot disagree.

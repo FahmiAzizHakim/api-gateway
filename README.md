@@ -16,7 +16,7 @@ API Gateway  :8000   <- this directory
       |  X-Gateway-Token + Authorization: Bearer <jwt>
       +--> website-service      :8001   site identity, theming, layout, content
       +--> shop-service         :8002   catalogue, carts, checkout, orders
-      +--> thirdparty-service   :8003   Omile TMS, RajaOngkir
+      +--> thirdparty-service   :8003   Omile TMS, RajaOngkir, Qrisly
 ```
 
 The three services and the frontend currently live in subdirectories of this
@@ -30,7 +30,7 @@ applications divide the domain between them, see
 
 | | held here | answered elsewhere |
 |---|---|---|
-| **Data** | `users`, `sessions`, `users_menugroup(detail)`, `menus`, plus the shared reference tables (`codes`, `glb_*` regions, `rajaongkirmap`, `couriers`) | websites, catalogue, orders, courier lookups |
+| **Data** | `users`, `sessions`, `users_menugroup(detail)`, `menus`, plus the shared reference tables (`codes`, `glb_*` regions, `rajaongkirmap`, `couriers`) | websites, catalogue, orders, courier lookups, QRIS codes and payments |
 | **Auth** | the only place a password is checked; the only place a token is checked against the blacklist | services verify the same token's *signature* and read its claims |
 | **Files** | `public/uploads`, `public/webassets` — one document root for every site asset and upload | services store only the relative path |
 | **Routes** | `/api/auth/*`, `/api/files/*`, `/api/admin/{menus,files,users,access-groups}` | everything under `/api/v1/*` and the rest of `/api/admin/*` |
@@ -133,6 +133,9 @@ php artisan tinker --execute="echo config('gateway.token');"
 | `SHOP_SERVICE_URL` | origin of shop-service |
 | `THIRDPARTY_SERVICE_URL` | origin of thirdparty-service |
 | `GATEWAY_TIMEOUT` | seconds to wait on a service before answering 502 (10) |
+| `GATEWAY_HEALTH_PATH` | what `GET /api/status` pings on each service (`/up`) |
+| `GATEWAY_HEALTH_TIMEOUT` | seconds to wait on that ping before calling a service down (3) |
+| `GATEWAY_HEALTH_TTL` | seconds a status answer is reused, so polling costs nothing (10). Also how stale the sidebar's view of a service can be |
 | `CORS_ALLOWED_ORIGINS` | comma-separated frontend origins. Never `*` — `supports_credentials` is on for the cart cookie, and browsers reject that pairing |
 | `SITE_IDS` | the website ids this installation serves (`1,2,3`) |
 | `UPLOAD_PUBLIC_ROOT` | absolute path to the served document root uploads are written into; set it wherever `DOCUMENT_ROOT` is empty (CLI, queue) or the docroot is not Laravel's `public/` |
@@ -229,6 +232,54 @@ document root holds them and one place decides what may be read.
 - Files are served with a one-year cache: each upload gets a generated filename,
   so a replacement gets a new URL rather than needing a purge.
 
+## The frontend, and its metadata
+
+The gateway also serves the built frontend, and this is the one part of it that
+answers HTML rather than JSON. It exists for a single reason: vue-vite renders
+in the browser, so the document it ships is an empty `<div>`, and every title,
+description and share card is written by JavaScript once the API has answered.
+Google runs that JavaScript. **No social scraper does** — WhatsApp, Facebook,
+LinkedIn and Slack read the bytes as sent — so a shared article arrived as a
+bare link with no title, no excerpt and no image.
+
+So three routes, in `routes/web.php`:
+
+| Route | What it answers |
+| --- | --- |
+| `GET /sitemap.xml` | Every URL worth indexing: the portal, each site's landing page, each article, with `<lastmod>` from the article's `updated_at`. A crawler fetches this before it runs anything, so the frontend cannot produce it. |
+| `GET /assets/{path}` | The build's fingerprinted files, for a deployment that has not copied `dist/` into the public root. Where it has, the web server answers these and PHP never starts. |
+| fallback | `index.html`, with an article's `<title>`, description, canonical, Open Graph, Twitter card and JSON-LD already in the `<head>` — see `SpaController` and `SeoTags`. |
+
+A few things worth knowing:
+
+- The injected tags carry `data-page-meta`, which is exactly what vue-vite's
+  `usePageMeta()` clears before writing its own. The two sides write the same
+  fields on purpose: the scraper reads the server's copy, the app replaces it
+  on boot, and neither ends up with two of every tag.
+- Only `/{slug}/content/{id}` is enriched today, because that is the page that
+  gets shared and searched for. Every other URL is served the same
+  `index.html` untouched, so adding one is a case in `SpaController::metaFor()`.
+- A missing article answers **404** with `noindex`, rather than 200 with a
+  sentence — a soft 404 is indexed as a real but empty page.
+- The article, the site and the portal are read through `ServiceClient` and
+  cached for `SEO_CACHE_TTL` (default 300s). A crawl is otherwise a small flood
+  of identical reads aimed at website-service.
+- Nothing here may break the page: an unreachable service or a build that is
+  not in place falls back to serving the file, or to plain text saying so.
+
+Configuration is `config/seo.php`:
+
+| Variable | What it is |
+| --- | --- |
+| `SPA_ROOT` | Where the build lives. Unset, the first of `public/` then `vue-vite/dist/` that holds an `index.html` wins — so a deployment that copies `dist/*` into the public root needs no configuration, and a local checkout that has run `npm run build` is served straight out of `dist`. |
+| `SEO_BASE_URL` | The origin canonical URLs are built on. Empty means "the host this request arrived on", which is right for one deployment behind one name and wrong the moment the same app answers on several. Set it once the site has a domain. |
+| `SEO_SITEMAP_SLUGS` | The slugs the frontend serves (`installer,ev`). Must match `CATALOG_SLUGS` in `vue-vite/src/shared/config/sites.ts`. Which slug is which website id is not configured — the portal is asked. |
+| `SEO_CACHE_TTL` | Seconds an article, a website and the portal are held. |
+
+`public/robots.txt` still needs its `Sitemap:` line: the directive requires an
+absolute URL and the file is static, so it cannot be written until the domain
+is known.
+
 ## API reference
 
 Conventions:
@@ -240,7 +291,58 @@ Conventions:
 - Everything else follows `ApiExceptionHandler`: 401 unauthorized/token, 403
   forbidden, 404 `Url not found`, 405 method not allowed, 500 fallback with no
   internals leaked.
-- `GET /up` is the health check.
+- `GET /up` is this app's own health check; `GET /api/status` is the whole
+  installation's — see below.
+
+### Status — `/api/status` (no token)
+
+| method | path | auth | notes |
+|---|---|---|---|
+| GET | `/api/status` | — | are the services answering? 30/min per IP |
+
+`/up` says this app is running. It says nothing about the three services behind
+it, and from outside there is no way to ask: the frontend knows one origin, so a
+service being down arrives as a 502 on whichever call happened to need it —
+without saying which service, or whether the rest are fine. This asks all three
+at once, concurrently, and answers plainly.
+
+**200 while everything is up, 503 as soon as anything is not**, with the same
+body either way, so a monitor can watch the status code alone.
+
+```json
+{
+  "data": {
+    "status": "degraded",
+    "gateway": {"name": "Company Profile", "status": "up", "environment": "local"},
+    "services": [
+      {"name": "website",    "status": "up",   "http_status": 200,  "latency_ms": 12,   "message": null},
+      {"name": "shop",       "status": "down", "http_status": null, "latency_ms": 3001, "message": "Unreachable"},
+      {"name": "thirdparty", "status": "up",   "http_status": 200,  "latency_ms": 9,    "message": null}
+    ],
+    "checked_at": "2026-09-11T09:20:15+00:00"
+  }
+}
+```
+
+| state | means |
+|---|---|
+| `up` | answered `GATEWAY_HEALTH_PATH` with a 2xx |
+| `degraded` | answered, but not with a 2xx — the host is there, the app is not well |
+| `down` | nothing answered before `GATEWAY_HEALTH_TIMEOUT` ran out |
+| `unconfigured` | no base URL in `config/gateway.php`, so nothing was asked |
+
+The overall `status` is `up` only when every service is, `down` when not one of
+them answered, `degraded` for anything in between.
+
+Reachability, not correctness: the ping goes to each service's own `/up`, which
+is registered outside its api group, so it needs neither `X-Gateway-Token` nor a
+database. A service whose database is down, or whose gateway token does not
+match this one, still reads as `up` here — those failures show up on the routes
+that use them, and they are fixed differently.
+
+Public on purpose: it exposes names, states and timings, never a service URL,
+and a status page that needs a login is no use during an outage that includes
+the login.
 
 ### Auth — `/api/auth`
 
@@ -286,30 +388,141 @@ controller and nowhere else.
 | `POST /sites/{id}/orders/lookup` | shop-service — email plus phone digits is a guessable pair, so 10/min per IP |
 | `GET /sites/{id}/receipt/{token}` · `POST /sites/{id}/receipt/{token}/attachments` | shop-service — the token is unguessable, which is what keeps it public |
 | `GET /regions/provinces` · `/cities/{code}` · `/districts/{code}` · `/subdistricts/{code}` | shop-service — not website scoped |
+| `GET /sites/{id}/qris` | thirdparty-service — the site's active QRIS code (`data: null` when it has none) |
+| `GET /sites/{id}/receipt/{token}/qris` | **the gateway itself** — the payable QRIS for one order: the string to render, the exact `final_amount` to transfer, and the code behind it. The one call no single service can answer: shop-service has the order's total, thirdparty-service turns it into a payment, and only the gateway reaches both. Raises a payment on the first visit and reuses it afterwards — and once the provider's fifteen-minute window closes, raises another against the same base, so the fee is never discounted twice |
 
 Three calls render a storefront: `/portal`, `/sites/{id}/landing` and
-`/sites/{id}/catalog`. Pass `?has_packages=1` to website-service wherever the
+`/sites/{id}/catalog`. A receipt paid by QRIS takes one more — `/sites/{id}/qris`
+— because the order and the code come from different applications. Pass `?has_packages=1` to website-service wherever the
 packages block's visibility matters — query strings are carried across as they
 stand.
+
+#### A landing section says which service it needs
+
+Every section in `/landing` and `/sections` carries a **`service`**, the same
+vocabulary as `menus.service` above: `website`, `shop`, `thirdparty`, or `null`
+for a block that fetches nothing (`why-us` is markup). Products, Packages, Toko
+and Pesanan Anda are `shop` — their contents come from the second call, to
+shop-service — so with shop-service down those blocks would render as empty
+frames on a page that is otherwise fine.
+
+The storefront prunes them: read `GET /api/status` (public, cached, cheap) and
+skip the sections whose service is not `up`. The column lives with the section
+rows in website-service, but that service cannot act on it — services never
+call each other, so only the gateway knows who is answering.
+
+```js
+const [{ data: page }, { data: health }] = await Promise.all([
+  api.get(`/v1/sites/${siteId}/landing`),
+  api.get('/status'),                     // 503 when something is down; read the body either way
+])
+const up = new Set(health.services.filter(s => s.status === 'up').map(s => s.name))
+const sections = page.sections.filter(s => !s.service || up.has(s.service))
+```
+
+A `website` value is honest but inert in practice — the payload carrying it came
+from website-service, so if that were down there would be no page to prune.
 
 ### Files — `/api/files`
 
 | method | path | auth | notes |
 |---|---|---|---|
 | GET | `/api/files/{path}` | — | greedy path; only `uploads/` and `webassets/` resolve |
-| POST | `/api/admin/files` | bearer | `file` (≤ 5 MB) + `folder`, one of `website, banner, content, about, client, service, product, bank, transaction`. 201 with `{path, original, url}` |
+| POST | `/api/admin/files` | bearer | `file` (≤ 5 MB) + `folder`, one of `website, banner, content, about, client, service, product, bank, transaction, qris`. 201 with `{path, original, url}`. Every service writes into this same root through `UPLOAD_PUBLIC_ROOT`, so most uploads never come through here |
 
 ### Admin, owned here — `/api/admin` (bearer)
 
 | method | path | notes |
 |---|---|---|
-| GET | `/menus` | the signed-in user's own sidebar, nested; an empty array when their group grants nothing |
+| GET | `/menus` | the signed-in user's own sidebar, nested; an empty array when their group grants nothing. Menus whose service is down are left out — see below |
 | GET | `/users`, `/users/{id}` | scoped to the caller's `website_id` |
 | POST · PUT · DELETE | `/users`, `/users/{id}` | `password` required on create, optional on update (blank keeps the current one); you cannot delete your own account |
 | GET | `/users/groups` | active access groups, for the `roles_code` picker |
 | GET | `/access-groups`, `/access-groups/{id}` | `{id}` also returns `meta.selected` — the menu ids it grants |
-| GET | `/access-groups/menu-tree` | the tree those grants are picked from; `?group={id}` adds that group's current selection |
+| GET | `/access-groups/menu-tree` | the tree those grants are picked from — one tree, shared by every site; `?group={id}` adds that group's current selection, and 404s for a group belonging to another website |
 | POST · PUT · DELETE | `/access-groups`, `/access-groups/{id}` | `menus[]` carries the grants |
+
+#### A menu whose service is down is not shown
+
+The sidebar is the gateway's, but most of the screens behind it are not:
+Products is shop-service, Banner is website-service, QRIS is thirdparty-service.
+With the service down, the menu used to render anyway and open a screen whose
+every call answered 502 — an outage that reached the admin as a broken page
+rather than a missing one.
+
+`menus.service` names the service a screen cannot work without — a key from
+`config/gateway.php`, so `website`, `shop` or `thirdparty`. `GET /api/admin/menus`
+reads it against the same cached check `GET /api/status` runs, and leaves out
+every row whose service is not `up`. The column is in the response too, so the
+frontend can say *why* a menu it remembers is gone.
+
+- **NULL means the gateway answers it** — Dashboard, Users, Access Groups, and
+  every folder. Always shown, and the safe default for a row nobody has
+  classified.
+- **Folders are NULL on purpose**, even where every child is one service's. A
+  folder disappears once the outage empties it, and Masterdata holds QRIS beside
+  five shop rows — marking it `shop` would hide QRIS whenever shop-service went
+  down.
+- **A folder that was already empty stays.** Empty for grant reasons is the tree
+  the access group asked for; only a folder emptied by the outage is dropped.
+- **Grants are untouched.** The row stays granted, stays in
+  `/access-groups/menu-tree` — you must be able to grant a menu during an
+  outage — and returns on its own when the service does.
+- **It fails open.** If the health check itself cannot be made, every menu is
+  shown: half a sidebar would be a worse fault than the one it reports.
+
+So with shop-service down, Commerce keeps Masterdata holding QRIS alone, and the
+Price and Transaction folders go entirely; with shop **and** thirdparty down,
+Commerce goes with them.
+
+#### The menu tree
+
+Rows, not code — [MenuSeeder](database/seeders/MenuSeeder.php) is the list, and
+`service` is the column above. **One tree for the installation**, shared by
+every website: the sidebar is the admin application, and that does not differ
+per site. The table used to carry a `website_id` and the seeder built the same
+rows once per site in `config/sites.php`; nothing ever made the copies differ,
+so they were folded into one and the column dropped.
+
+What scopes an admin is the **grant**, not the menu: `users_menugroupdetail`
+names a group, a group belongs to a website, and a user reaches a screen only
+through their group. What the screen then *reads* is scoped by the `website_id`
+on the verified token, so two admins opening Products still see their own
+catalogues. So `/access-groups/menu-tree` is not website scoped — the group
+granting out of it is, and `?group=` is checked against the caller's site.
+
+Everything commercial sits under one folder:
+
+```
+Dashboard                                        gateway
+Website/                                         gateway
+  Website Setting, Banner, Content, About,
+  Landing Sections, Client Logos,
+  Main Style Setting        website/*            website-service
+Settings/                                        gateway
+  Users, User Access Group  master/*             gateway
+Inbox                       message              website-service
+Commerce/                                        gateway
+  Masterdata/                                    gateway
+    Services, Categories, Products, Packages,
+    Banks                   commerce/masterdata/*   shop-service
+    QRIS                    commerce/masterdata/qris  thirdparty-service
+  Price/                                         gateway
+    Delivery Prices,
+    Other Charges           commerce/price/*     shop-service
+  Transaction/                                   gateway
+    Selling, Balance,
+    Statistics              commerce/transaction/*  shop-service
+```
+
+`menu_url` **is** the frontend route path — the sidebar navigates to whatever
+the column says — so these paths and the admin frontend's routes move together.
+Balance and Statistics have no screen yet; the sidebar entry is what says one is
+coming, and the frontend's placeholder is what an unbuilt one resolves to.
+
+Within a level the order is by id, which is insertion order, so a folder added
+later sorts after its siblings regardless of where it is declared in the seeder.
+There is no ordering column.
 
 ### Admin, forwarded — `/api/admin` (bearer)
 
@@ -323,7 +536,7 @@ same order as each service's own route file.
 |---|---|
 | `website`, `styles`, `sections`, `banners`, `contents`, `abouts`, `clients`, `messages` | website-service |
 | `services`, `categories`, `products`, `packages`, `other-charges`, `banks`, `delivery-prices`, `transactions` | shop-service |
-| `shipping/mapping/sync` | thirdparty-service |
+| `shipping/mapping/sync`, `qris` (the codes a site is paid into) | thirdparty-service |
 
 > **Uploads are POST, not PUT** — PHP does not parse a multipart body on PUT, so
 > any endpoint that can carry a file uses POST for update too. That is why
@@ -339,6 +552,7 @@ app/
   Http/Controllers/Api/
     AuthController        login, me, refresh, logout — the only password check
     FileController        serve + store files; the allowed roots and folders
+    StatusController      which services are answering (no token)
     SiteController        public reads  -> website-service (path per action)
     ShopController        public reads  -> shop-service    (path per action)
     Admin/
@@ -346,6 +560,7 @@ app/
       {Website,Shop,Thirdparty}AdminController   which service, nothing else
       UserController, GroupMenuController, MenuController   owned here
   Services/Gateway/ServiceProxy   header policy, multipart, 502, Set-Cookie
+  Services/Gateway/ServiceStatus  pings every service at once, for /api/status
   Services/Helper/UploadService   filename generation, the shared docroot
   Http/Middleware/CheckMenuAccess menu-level gating (written, not yet applied)
   Exceptions/ApiExceptionHandler  the one place a failure becomes JSON
@@ -454,13 +669,22 @@ Follow the layers, and mirror the existing namespaces
 
 ### Add an admin menu
 
-Menus are rows, not code. Add a migration in the style of
-[database/migrations/2026_08_21_000005_add_section_menu.php](database/migrations/2026_08_21_000005_add_section_menu.php),
-then re-run the safe half of the seed:
+Menus are rows, not code. Add it to the array in
+[MenuSeeder](database/seeders/MenuSeeder.php) — declared after its parent, and
+with its `service`, which is what keeps it out of the sidebar while the service
+behind it is down (`null` only if the gateway answers the screen itself) — then
+add a migration in the style of
+[database/migrations/2026_08_21_000005_add_section_menu.php](database/migrations/2026_08_21_000005_add_section_menu.php)
+for the databases that already have their tree, and re-run the safe half of the
+seed:
 
 ```bash
 php artisan db:seed --class=SiteStructureSeeder
 ```
+
+That migration inserts **one row**, not one per site, and one grant per group
+that should see it. The older menu migrations loop over `config('sites.ids')`
+because the table used to be website scoped; a new one does not.
 
 `db:seed` splits in two: slow reference data that only a fresh install needs, and
 `SiteStructureSeeder` — accounts, access groups, the menu tree — which is written

@@ -33,13 +33,17 @@ class MenuRepository extends BaseRepository
     }
 
     /**
-     * Every active top-level menu for a website with its descendants loaded --
-     * the full tree an access group's checkboxes are drawn from, ungated by
-     * any role.
+     * Every active top-level menu with its descendants loaded -- the full tree
+     * an access group's checkboxes are drawn from, ungated by any role.
+     *
+     * Not scoped to a website, because the table is not: there is one tree and
+     * every site's groups grant out of it (see drop_website_id_from_menus).
+     * The group doing the granting is what belongs to a website, and
+     * GroupMenuController checks that before it gets here.
      */
-    public function treeForWebsite($websiteId = null)
+    public function tree()
     {
-        return $this->forWebsite($websiteId)
+        return $this->query()
             ->whereNull('parent_id')
             ->where('activestatus', 1)
             ->orderBy('id')

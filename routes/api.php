@@ -8,8 +8,10 @@ use App\Http\Controllers\Api\Admin\MenuController;
 use App\Http\Controllers\Api\Admin\UserController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\FileController;
+use App\Http\Controllers\Api\PublicQrisController;
 use App\Http\Controllers\Api\ShopController;
 use App\Http\Controllers\Api\SiteController;
+use App\Http\Controllers\Api\StatusController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -24,11 +26,15 @@ use Illuminate\Support\Facades\Route;
 |   - access groups and the admin menu tree
 |   - the public document root: site assets and uploaded files
 |
+| Nothing else. A table that is not about who is calling belongs to the service
+| that owns the domain -- the QRIS codes moved to thirdparty-service, beside
+| the Qrisly credentials that register them.
+|
 | Behind it, each service holds its own database and trusts the token:
 |
 |   website-service     site identity, theming, page layout, content
 |   shop-service        catalogue, carts, checkout, orders
-|   thirdparty-service  Omile TMS and RajaOngkir
+|   thirdparty-service  Omile TMS, RajaOngkir, Qrisly
 |
 | A service reads website_id and email off the token's claims (see
 | App\Models\User::getJWTCustomClaims) and scopes every row by them, which is
@@ -42,6 +48,28 @@ use Illuminate\Support\Facades\Route;
 | here, and each service verifies the same token again with VerifyJwt before
 | answering, so a forwarded request has been vouched for twice.
 */
+
+/*
+|--------------------------------------------------------------------------
+| Status
+|--------------------------------------------------------------------------
+|
+| Which services are answering.
+|
+| /up says this app is running and nothing more; the three services behind it
+| are invisible from outside, so a service being down reaches the frontend as
+| a 502 on whatever call needed it -- without saying which service, or whether
+| the others are fine. This asks all of them at once and answers plainly.
+|
+| No token: it exposes no URL, only names and states, and a status page that
+| needs a login is no use during an outage that includes the login. 200 while
+| everything is up, 503 as soon as anything is not, so a monitor can watch the
+| status code alone.
+|
+| Throttled because each miss costs one outbound request per service; answers
+| are reused for gateway.health.ttl seconds, so polling mostly costs nothing.
+*/
+Route::get('/status', StatusController::class)->middleware('throttle:30,1');
 
 /*
 |--------------------------------------------------------------------------
@@ -116,6 +144,14 @@ Route::prefix('v1')->group(function () {
         Route::get('/clients', [SiteController::class, 'clients']);
         Route::get('/contents', [SiteController::class, 'contents']);
         Route::get('/contents/{id}', [SiteController::class, 'content'])->whereNumber('id');
+        Route::get('/contents/{id}/comments', [SiteController::class, 'comments'])->whereNumber('id');
+
+        // The other public write, so the other route worth a limit. Tighter
+        // than /contact: a person writes one comment and posts it, so five a
+        // minute is already generous and a script wants far more.
+        Route::post('/contents/{id}/comments', [SiteController::class, 'storeComment'])
+            ->whereNumber('id')
+            ->middleware('throttle:5,1');
 
         // The one public write, so the one public route worth a limit: a
         // contact form is what a spammer scripts. 20 a minute per IP is far
@@ -129,6 +165,13 @@ Route::prefix('v1')->group(function () {
         Route::get('/services', [ShopController::class, 'services']);
         Route::get('/products', [ShopController::class, 'products']);
         Route::get('/products/{id}', [ShopController::class, 'product'])->whereNumber('id');
+
+        // The product page's view counter. A public write, so a limited one --
+        // and looser than the comment box, because a visitor legitimately
+        // opens several products in a row while browsing a catalogue.
+        Route::post('/products/{id}/view', [ShopController::class, 'productView'])
+            ->whereNumber('id')
+            ->middleware('throttle:30,1');
         Route::get('/packages', [ShopController::class, 'packages']);
 
         /* ---- Basket -> shop-service ---- */
@@ -145,6 +188,13 @@ Route::prefix('v1')->group(function () {
         Route::post('/checkout/confirm', [ShopController::class, 'confirmCheckout']);
         Route::post('/checkout', [ShopController::class, 'checkout']);
 
+        /* ---- Payment ---- */
+
+        // -> thirdparty-service, which holds the codes. The receipt itself is
+        // shop-service's and cannot carry this, since services never call each
+        // other -- so a receipt paid by QRIS asks for the two separately.
+        Route::get('/qris', [PublicQrisController::class, 'active']);
+
         /* ---- Orders -> shop-service ---- */
 
         // Email plus the last digits of a phone, so a guessable pair: rate
@@ -156,6 +206,36 @@ Route::prefix('v1')->group(function () {
         // Addressed by its unguessable token, which is what keeps it public.
         Route::get('/receipt/{token}', [ShopController::class, 'receipt']);
         Route::post('/receipt/{token}/attachments', [ShopController::class, 'uploadAttachment']);
+
+        /*
+         * Has this order's QRIS been paid?
+         *
+         * Answered here rather than forwarded, for the usual reason: the token
+         * names an order shop-service holds, and the payment behind it is
+         * thirdparty-service's.
+         *
+         * Throttled because it is the one route on the storefront that costs
+         * an upstream call per request -- Qrisly sends no webhook, so a receipt
+         * page finds out by asking, and a page polling every second would ask
+         * sixty times a minute. Twenty is a check every three seconds, which is
+         * faster than anyone scans a code. A payment already settled answers
+         * from the stored row without troubling Qrisly at all.
+         *
+         * Declared after /receipt/{token} so the literal segment is matched by
+         * this route rather than swallowed as part of a token.
+         */
+        Route::get('/receipt/{token}/payment-status', [PublicQrisController::class, 'paymentStatus'])
+            ->middleware('throttle:20,1');
+
+        /*
+         * There is deliberately no route here that raises a QRIS.
+         *
+         * A payment is generated once, as part of placing the order -- see
+         * ShopController::checkout -- and the receipt above carries it under
+         * `data.qris_payment`. Opening a receipt is a read: it shows the
+         * payment that exists and never asks Qrisly for another, so no amount
+         * of refreshing the page spends the seller's balance.
+         */
     });
 });
 
@@ -261,8 +341,20 @@ Route::prefix('admin')->middleware('auth:api')->group(function () {
     Route::prefix('contents')->group(function () {
         Route::get('/', WebsiteAdminController::class);
         Route::post('/', WebsiteAdminController::class);
+        // Before /{id}: a literal segment must not be read as an id.
+        // How the articles are being read -- ?days=N sets the window.
+        Route::get('/stats', WebsiteAdminController::class);
+        Route::get('/{id}/stats', WebsiteAdminController::class);
         Route::get('/{id}', WebsiteAdminController::class);
         Route::post('/{id}', WebsiteAdminController::class);
+        Route::delete('/{id}', WebsiteAdminController::class);
+    });
+
+    // Moderation for the comments visitors leave on an article: list them,
+    // remove the ones that should not be there. Nothing edits one.
+    Route::prefix('comments')->group(function () {
+        Route::get('/', WebsiteAdminController::class);
+        Route::get('/{id}', WebsiteAdminController::class);
         Route::delete('/{id}', WebsiteAdminController::class);
     });
 
@@ -322,6 +414,10 @@ Route::prefix('admin')->middleware('auth:api')->group(function () {
     Route::prefix('products')->group(function () {
         Route::get('/', ShopAdminController::class);
         Route::post('/', ShopAdminController::class);
+        // Before /{id}: a literal segment must not be read as an id.
+        // How often the catalogue is looked at -- ?days=N sets the window.
+        Route::get('/stats', ShopAdminController::class);
+        Route::get('/{id}/stats', ShopAdminController::class);
         Route::get('/{id}', ShopAdminController::class);
         Route::post('/{id}', ShopAdminController::class);
         Route::delete('/{id}', ShopAdminController::class);
@@ -375,9 +471,29 @@ Route::prefix('admin')->middleware('auth:api')->group(function () {
     | Forwarded: thirdparty-service
     |--------------------------------------------------------------------------
     |
-    | Maintenance rather than traffic: re-reads the courier's area list into
-    | the mapping table.
+    | Not traffic: two writes an admin makes, each against an upstream this
+    | installation does not own.
     */
 
+    // Re-reads the courier's area list into the mapping table.
     Route::post('/shipping/mapping/sync', ThirdpartyAdminController::class);
+
+    /*
+    | The QRIS codes a website is paid into. Owned by thirdparty-service, with
+    | the table and the Qrisly credentials that register them, so these are
+    | relayed like any other admin resource -- the paths are identical on both
+    | sides.
+    |
+    | POST is multipart (the image); ServiceProxy forwards it as multipart
+    | rather than re-encoding it. Update is a plain PUT because the image
+    | cannot be replaced: a different image is a different registration.
+    */
+    Route::prefix('qris')->group(function () {
+        Route::get('/', ThirdpartyAdminController::class);
+        Route::post('/', ThirdpartyAdminController::class);
+        Route::get('/{id}', ThirdpartyAdminController::class)->whereNumber('id');
+        Route::put('/{id}', ThirdpartyAdminController::class)->whereNumber('id');
+        Route::put('/{id}/activate', ThirdpartyAdminController::class)->whereNumber('id');
+        Route::delete('/{id}', ThirdpartyAdminController::class)->whereNumber('id');
+    });
 });

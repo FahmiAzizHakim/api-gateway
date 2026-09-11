@@ -31,7 +31,7 @@ class FileController extends ApiController
      */
     protected const FOLDERS = [
         'website', 'banner', 'content', 'about', 'client',
-        'service', 'product', 'bank', 'transaction',
+        'service', 'product', 'bank', 'transaction', 'qris',
     ];
 
     /**

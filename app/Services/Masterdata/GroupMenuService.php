@@ -48,11 +48,14 @@ class GroupMenuService
     }
 
     /* =========================
-     * MENU TREE (active menus for the website, nested by parent)
+     * MENU TREE (every active menu, nested by parent)
+     *
+     * One tree for the installation, so this takes no website: it is the
+     * group that belongs to a site, not the menu.
      * ========================= */
-    public function getMenuTree($websiteId = null)
+    public function getMenuTree()
     {
-        return $this->menus->treeForWebsite($websiteId);
+        return $this->menus->tree();
     }
 
     /* =========================

@@ -10,23 +10,26 @@ class UserGroupsDetailSeeder extends Seeder
     /**
      * Run the database seeds.
      *
-     * Grant each group full access to the menus of its own website. Only the
-     * missing (group, menu) pairs are inserted, so a re-seed tops up access to
-     * newly added menus -- for instance a whole new website's tree -- without
-     * duplicating the grants a group already has.
+     * Grant every group full access to the menu tree. Only the missing
+     * (group, menu) pairs are inserted, so a re-seed tops up access to newly
+     * added menus without duplicating the grants a group already has.
+     *
+     * There is one tree for the installation rather than one per website, so
+     * there is nothing to narrow here any more (see
+     * drop_website_id_from_menus). This seeds the superadmin groups; a group
+     * that is meant to see less is edited through /api/admin/access-groups,
+     * and a re-seed would hand it everything -- which is the same caveat this
+     * seeder always carried.
      *
      * @return void
      */
     public function run()
     {
-        $groups = DB::table('users_menugroup')->get();
-        $added  = 0;
+        $groups  = DB::table('users_menugroup')->get();
+        $menuIds = DB::table('menus')->pluck('id');
+        $added   = 0;
 
         foreach ($groups as $group) {
-            $menuIds = DB::table('menus')
-                ->where('website_id', $group->website_id)
-                ->pluck('id');
-
             $granted = DB::table('users_menugroupdetail')
                 ->where('usergroup_id', $group->id)
                 ->pluck('menu_id')

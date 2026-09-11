@@ -95,6 +95,25 @@ class SiteController extends ApiController
         return $this->site($request, "/sites/{$website}/contents/{$id}");
     }
 
+    /** GET /api/v1/sites/{website}/contents/{id}/comments -- the thread. */
+    public function comments(Request $request, $website, $id): Response
+    {
+        return $this->site($request, "/sites/{$website}/contents/{$id}/comments");
+    }
+
+    /**
+     * POST /api/v1/sites/{website}/contents/{id}/comments -- a visitor's
+     * comment.
+     *
+     * The other public write, and rate limited on the route for the same
+     * reason /contact is. website-service validates it and answers 422 with
+     * the field errors, which pass straight back to the form.
+     */
+    public function storeComment(Request $request, $website, $id): Response
+    {
+        return $this->site($request, "/sites/{$website}/contents/{$id}/comments");
+    }
+
     /**
      * POST /api/v1/sites/{website}/contact -- the contact form.
      *
