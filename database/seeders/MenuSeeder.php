@@ -62,6 +62,21 @@ class MenuSeeder extends Seeder
             ['key' => 'website',     'parent' => null,              'name_in' => 'Website',                     'name_en' => 'Website',            'menu_url' => '',                 'menu_icon' => 'far fa-window-restore',   'menu_type' => 'FOLDER', 'service' => null],
             ['key' => 'web_setting', 'parent' => 'website',         'name_in' => 'Pengaturan Website',          'name_en' => 'Website Setting',    'menu_url' => 'website/setting',  'menu_icon' => 'fas fa-chalkboard',       'menu_type' => 'MENU', 'service' => 'website'],
             ['key' => 'banner',      'parent' => 'website',         'name_in' => 'Banner',                      'name_en' => 'Banner',             'menu_url' => 'website/banner',   'menu_icon' => 'far fa-images',           'menu_type' => 'MENU', 'service' => 'website'],
+            // The promotional slider, next to Banner: the other screen that
+            // puts images on the landing page. A banner is the site's own
+            // hero and stays; a campaign is temporary and links away from the
+            // page, which is why they are separate screens over separate
+            // tables in website-service.
+            ['key' => 'campaign',    'parent' => 'website',         'name_in' => 'Kampanye',                    'name_en' => 'Campaign',           'menu_url' => 'website/campaign', 'menu_icon' => 'fas fa-bullhorn',         'menu_type' => 'MENU', 'service' => 'website'],
+            // Under Website, but answered by shop-service -- the first row in
+            // the tree whose folder and service disagree, and deliberately. A
+            // highlight changes nothing about a product, only which products
+            // the page leads with, so an admin looks for it beside Banner and
+            // Campaign; the table and the products behind it are
+            // shop-service's, so that is what has to be up for the screen to
+            // work. The folder stays null and only this row goes when
+            // shop-service does.
+            ['key' => 'highlight',   'parent' => 'website',         'name_in' => 'Produk Unggulan',             'name_en' => 'Product Highlight',  'menu_url' => 'website/product-highlight', 'menu_icon' => 'fas fa-star',    'menu_type' => 'MENU', 'service' => 'shop'],
             ['key' => 'content',     'parent' => 'website',         'name_in' => 'Konten',                      'name_en' => 'Content',            'menu_url' => 'website/content',  'menu_icon' => 'fas fa-newspaper',        'menu_type' => 'MENU', 'service' => 'website'],
             ['key' => 'about',       'parent' => 'website',         'name_in' => 'Tentang Kami',                'name_en' => 'About',              'menu_url' => 'website/about',    'menu_icon' => 'fas fa-address-card',     'menu_type' => 'MENU', 'service' => 'website'],
             ['key' => 'section',     'parent' => 'website',         'name_in' => 'Bagian Halaman',              'name_en' => 'Landing Sections',   'menu_url' => 'website/section',  'menu_icon' => 'fas fa-stream',           'menu_type' => 'MENU', 'service' => 'website'],
@@ -103,6 +118,13 @@ class MenuSeeder extends Seeder
             ['key' => 'service',     'parent' => 'masterdata',      'name_in' => 'Layanan',                     'name_en' => 'Services',           'menu_url' => 'commerce/masterdata/service',     'menu_icon' => 'fas fa-hand-holding',  'menu_type' => 'MENU',   'service' => 'shop'],
             ['key' => 'categories',  'parent' => 'masterdata',      'name_in' => 'Kategori',                    'name_en' => 'Categories',         'menu_url' => 'commerce/masterdata/categories',  'menu_icon' => 'fas fa-th-large',      'menu_type' => 'MENU',   'service' => 'shop'],
             ['key' => 'products',    'parent' => 'masterdata',      'name_in' => 'Produk',                      'name_en' => 'Products',           'menu_url' => 'commerce/masterdata/product',     'menu_icon' => 'fas fa-gifts',         'menu_type' => 'MENU',   'service' => 'shop'],
+            // Moderation for what buyers wrote about a product: list, hide,
+            // remove. Beside Products because that is what a seller is looking
+            // for when they come here -- not under Transaction, though every
+            // review comes from an order: the order is how a review is proved
+            // rather than what it is about. No create or edit exists on the
+            // API, so a shop cannot write its own.
+            ['key' => 'review',      'parent' => 'masterdata',      'name_in' => 'Ulasan Produk',               'name_en' => 'Product Reviews',    'menu_url' => 'commerce/masterdata/review',      'menu_icon' => 'fas fa-comment-dots',  'menu_type' => 'MENU',   'service' => 'shop'],
             ['key' => 'packages',    'parent' => 'masterdata',      'name_in' => 'Paket',                       'name_en' => 'Packages',           'menu_url' => 'commerce/masterdata/package',     'menu_icon' => 'fas fa-box-open',      'menu_type' => 'MENU',   'service' => 'shop'],
             ['key' => 'bank',        'parent' => 'masterdata',      'name_in' => 'Bank',                        'name_en' => 'Banks',              'menu_url' => 'commerce/masterdata/bank',        'menu_icon' => 'fas fa-university',    'menu_type' => 'MENU',   'service' => 'shop'],
             // Next to Banks: the same thing to an admin, somewhere a

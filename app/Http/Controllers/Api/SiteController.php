@@ -74,6 +74,12 @@ class SiteController extends ApiController
         return $this->site($request, "/sites/{$website}/banners");
     }
 
+    /** GET /api/v1/sites/{website}/campaigns -- the promotions now running. */
+    public function campaigns(Request $request, $website): Response
+    {
+        return $this->site($request, "/sites/{$website}/campaigns");
+    }
+
     public function abouts(Request $request, $website): Response
     {
         return $this->site($request, "/sites/{$website}/abouts");

@@ -20,8 +20,8 @@ one boots from `routes/api.php` alone and renders every failure as JSON
 | | tables | public API | admin API |
 |---|---|---|---|
 | **gateway** (`.`) | users, sessions, menus, access groups | `/api/auth/*`, `/api/files/{path}`, `/api/v1/sites/{id}/receipt/{token}/payment-status`, `/api/v1/*` —> website-service | `/api/admin/{users,access-groups,menus,files}` |
-| **website-service** | websites, web_styles, web_sections, styles, banners, contents, content_views, content_comments, abouts, message | `/api/v1/portal`, `/api/v1/sites/{id}/*` | `/api/admin/{website,styles,sections,banners,contents,comments,abouts,messages}` |
-| **shop-service** | services, categories, products, product_views, packages, carts, transactions, banks, other_charges, delivery_prices | `/api/v1/sites/{id}/{catalog,cart,checkout,receipt,...}`, `/api/v1/regions/*` | `/api/admin/{services,categories,products,packages,other-charges,banks,delivery-prices,transactions}` |
+| **website-service** | websites, web_styles, web_sections, styles, banners, campaigns, clients, contents, content_views, content_comments, abouts, message | `/api/v1/portal`, `/api/v1/sites/{id}/*` | `/api/admin/{website,styles,sections,banners,campaigns,clients,contents,comments,abouts,messages}` |
+| **shop-service** | services, categories, products, product_views, packages, product_highlights, product_reviews, carts, transactions, banks, other_charges, delivery_prices | `/api/v1/sites/{id}/{catalog,highlights,cart,checkout,receipt,receipt/{token}/reviews,...}`, `/api/v1/regions/*` | `/api/admin/{services,categories,products,packages,product-highlights,product-reviews,other-charges,banks,delivery-prices,transactions}` |
 | **thirdparty-service** | qris, qris_payments, api_logs, plus reference lookups | `/api/v1/logistics/*`, `/api/v1/shipping/*`, `/api/v1/sites/{id}/qris`, `/api/v1/payment/qris{,/{history_id},/reference/{ref}}`, `/api/v1/payment/qris/{history_id\|reference/{ref}}/status` | `/api/admin/shipping/mapping/sync`, `/api/admin/qris/*` |
 
 Every app also keeps the shared reference data — `codes`, the `glb_*` regions,

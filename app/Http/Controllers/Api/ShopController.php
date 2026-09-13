@@ -126,6 +126,52 @@ class ShopController extends ApiController
         return $this->shop($request, "/sites/{$website}/packages");
     }
 
+    /**
+     * GET /api/v1/sites/{website}/products/{id}/reviews -- what buyers said,
+     * with the average and the count.
+     */
+    public function productReviews(Request $request, $website, $id): Response
+    {
+        return $this->shop($request, "/sites/{$website}/products/{$id}/reviews");
+    }
+
+    /**
+     * GET /api/v1/sites/{website}/receipt/{token}/reviews -- what this
+     * receipt has already reviewed, so the page knows which product lines
+     * still show a Review button.
+     */
+    public function receiptReviews(Request $request, $website, $token): Response
+    {
+        return $this->shop($request, "/sites/{$website}/receipt/{$token}/reviews");
+    }
+
+    /**
+     * POST /api/v1/sites/{website}/receipt/{token}/reviews -- a buyer's
+     * review of one product on their order.
+     *
+     * Multipart (the photos), so ServiceProxy forwards the parts rather than
+     * re-encoding them. The receipt token is the whole credential: it is
+     * unguessable and already proves the caller placed this order, which is
+     * why the body names a product and never an order.
+     */
+    public function storeReceiptReview(Request $request, $website, $token): Response
+    {
+        return $this->shop($request, "/sites/{$website}/receipt/{$token}/reviews");
+    }
+
+    /**
+     * GET /api/v1/sites/{website}/highlights -- the curated product rows.
+     *
+     * Shop-service's, like the rest of the catalogue, even though the screen
+     * that maintains them sits under Website in the admin: what the sidebar
+     * groups a screen under and which service owns the table are different
+     * questions.
+     */
+    public function highlights(Request $request, $website): Response
+    {
+        return $this->shop($request, "/sites/{$website}/highlights");
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Basket

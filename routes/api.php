@@ -140,6 +140,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/styles', [SiteController::class, 'styles']);
         Route::get('/sections', [SiteController::class, 'sections']);
         Route::get('/banners', [SiteController::class, 'banners']);
+        Route::get('/campaigns', [SiteController::class, 'campaigns']);
         Route::get('/abouts', [SiteController::class, 'abouts']);
         Route::get('/clients', [SiteController::class, 'clients']);
         Route::get('/contents', [SiteController::class, 'contents']);
@@ -172,7 +173,15 @@ Route::prefix('v1')->group(function () {
         Route::post('/products/{id}/view', [ShopController::class, 'productView'])
             ->whereNumber('id')
             ->middleware('throttle:30,1');
+
+        // What buyers said about one product. A plain read: the reviews are
+        // published, and the resource carries no order behind them.
+        Route::get('/products/{id}/reviews', [ShopController::class, 'productReviews'])
+            ->whereNumber('id');
         Route::get('/packages', [ShopController::class, 'packages']);
+        // The curated rows -- "Best Seller", "New Arrivals" -- each with its
+        // products. Highlights holding nothing visible are left out upstream.
+        Route::get('/highlights', [ShopController::class, 'highlights']);
 
         /* ---- Basket -> shop-service ---- */
 
@@ -206,6 +215,23 @@ Route::prefix('v1')->group(function () {
         // Addressed by its unguessable token, which is what keeps it public.
         Route::get('/receipt/{token}', [ShopController::class, 'receipt']);
         Route::post('/receipt/{token}/attachments', [ShopController::class, 'uploadAttachment']);
+
+        /*
+         * Reviews a buyer leaves from their own receipt.
+         *
+         * Addressed by the receipt token like everything else here, which is
+         * what keeps them public: the token is unguessable and proves whoever
+         * holds it placed the order, so shop-service can check the purchase
+         * without a login. The body names a product, never an order.
+         *
+         * The POST is a public write that stores files, so it is limited more
+         * tightly than the comment box: a person reviews the handful of things
+         * they bought, one at a time, and five a minute is already generous.
+         * Multipart -- ServiceProxy forwards the photos as they arrived.
+         */
+        Route::get('/receipt/{token}/reviews', [ShopController::class, 'receiptReviews']);
+        Route::post('/receipt/{token}/reviews', [ShopController::class, 'storeReceiptReview'])
+            ->middleware('throttle:5,1');
 
         /*
          * Has this order's QRIS been paid?
@@ -338,6 +364,16 @@ Route::prefix('admin')->middleware('auth:api')->group(function () {
         Route::delete('/{id}', WebsiteAdminController::class);
     });
 
+    // The promotions a site is running: a slide each, shown as a slider when
+    // more than one is active. Multipart on both writes, like banners.
+    Route::prefix('campaigns')->group(function () {
+        Route::get('/', WebsiteAdminController::class);
+        Route::post('/', WebsiteAdminController::class);
+        Route::get('/{id}', WebsiteAdminController::class);
+        Route::post('/{id}', WebsiteAdminController::class);
+        Route::delete('/{id}', WebsiteAdminController::class);
+    });
+
     Route::prefix('contents')->group(function () {
         Route::get('/', WebsiteAdminController::class);
         Route::post('/', WebsiteAdminController::class);
@@ -429,6 +465,35 @@ Route::prefix('admin')->middleware('auth:api')->group(function () {
         Route::post('/', ShopAdminController::class);
         Route::get('/{id}', ShopAdminController::class);
         Route::put('/{id}', ShopAdminController::class);
+        Route::delete('/{id}', ShopAdminController::class);
+    });
+
+    /*
+     * A named set of products shown together on the storefront. The screen
+     * sits under Website in the sidebar -- it is a decision about the page --
+     * but the table and the products it names are shop-service's, so it is
+     * forwarded there like the rest of the catalogue.
+     */
+    Route::prefix('product-highlights')->group(function () {
+        Route::get('/', ShopAdminController::class);
+        // The product picker, which must not be read as an id.
+        Route::get('/options', ShopAdminController::class);
+        Route::post('/', ShopAdminController::class);
+        Route::get('/{id}', ShopAdminController::class);
+        Route::put('/{id}', ShopAdminController::class);
+        Route::delete('/{id}', ShopAdminController::class);
+    });
+
+    /*
+     * Moderation for what buyers wrote about a product. Read, hide, remove --
+     * there is no create or update, because a shop that could write or reword
+     * its own reviews would not be publishing reviews. Mirrors the group in
+     * shop-service one for one.
+     */
+    Route::prefix('product-reviews')->group(function () {
+        Route::get('/', ShopAdminController::class);
+        Route::get('/{id}', ShopAdminController::class);
+        Route::put('/{id}/publish', ShopAdminController::class);
         Route::delete('/{id}', ShopAdminController::class);
     });
 
